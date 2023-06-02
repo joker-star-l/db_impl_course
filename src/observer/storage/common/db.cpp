@@ -78,15 +78,21 @@ RC Db::create_table(const char *table_name, int attribute_count, const AttrInfo 
 
 RC Db::drop_table(const char* table_name)
 {
-  //TODO 从表list(opened_tables_)中找出表指针
-
-  //TODO 找不到表，要返回错误
-
-  //TODO 调用 table->destroy 函数，让表自己销毁资源
-
-  //TODO 删除成功的话，从表list中将它删除
-
-  return RC::GENERIC_ERROR;
+  // 从表 list(opened_tables_) 中找出表指针
+  Table* table = opened_tables_[table_name];
+  // 找不到表，要返回错误
+  if (table == nullptr) {
+      opened_tables_.erase(table_name);
+      return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+  // 调用 table->destroy 函数，让表自己销毁资源
+  RC rc = table->destroy(path_.c_str());
+  if (rc != RC::SUCCESS) {
+      return rc;
+  }
+  // 删除成功的话，从表 list 中将它删除
+  opened_tables_.erase(table_name);
+  return RC::SUCCESS;
 }
 
 Table *Db::find_table(const char *table_name) const

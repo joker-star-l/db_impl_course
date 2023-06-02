@@ -122,17 +122,32 @@ RC Table::create(
 }
 
 RC Table::destroy(const char* dir) {
-  //刷新所有脏页
+  // 刷新所有脏页
   RC rc = sync();
   if(rc != RC::SUCCESS) return rc;
 
-  //TODO 删除描述表元数据的文件
+  // 删除描述表元数据的文件
+  if (remove(table_meta_file(dir, name()).c_str()) != 0) {
+      LOG_ERROR("Remove table meta file error");
+      return RC::GENERIC_ERROR;
+  }
+  // 删除表数据文件
+  if (remove(table_data_file(dir, name()).c_str()) != 0) {
+      LOG_ERROR("Remove table data file error");
+      return RC::GENERIC_ERROR;
+  }
+  // 清理所有的索引相关文件数据与索引元数据
+  int index_num = table_meta_.index_num();
+  for (int i = 0; i < index_num; i++) {
+      ((BplusTreeIndex*) indexes_[i])->close();
+      const IndexMeta* index_meta = table_meta_.index(i);
+      if (remove(table_index_file(dir, name(), index_meta->name()).c_str()) != 0) {
+          LOG_ERROR("Remove table index file error");
+          return RC::GENERIC_ERROR;
+      }
+  }
 
-  //TODO 删除表数据文件
-
-  //TODO 清理所有的索引相关文件数据与索引元数据
-
-  return RC::GENERIC_ERROR;
+  return RC::SUCCESS;
 }
 
 

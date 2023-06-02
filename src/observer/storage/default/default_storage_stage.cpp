@@ -202,13 +202,12 @@ void DefaultStorageStage::handle_event(StageEvent *event)
     } break;
 
     case SCF_DROP_TABLE: {
-
-      // TODO: 拿到要 drop 的表
-
-      // TODO: 调用drop_table接口，drop_table 要在 handler_ 中实现
-
-      // TODO: 返回结果，带不带换行符都可以
-
+      // 拿到要 drop 的表
+      DropTable& drop_table = sql->sstr.drop_table;
+      // 调用 drop_table 接口，drop_table 要在 handler_ 中实现
+      rc = handler_->drop_table(current_db, drop_table.relation_name);
+      // 返回结果，带不带换行符都可以
+      snprintf(response, sizeof(response), "%s\n", rc == RC::SUCCESS ? "SUCCESS" : "FAILURE");
     }break;
 
     case SCF_CREATE_INDEX: {
