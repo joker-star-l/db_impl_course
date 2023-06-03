@@ -42,7 +42,7 @@ bool not_pinned(const std::pair<BufferTag, int>& kv, void *ctx) {
 
 Frame *BPManager::alloc(int file_desc, PageNum page_num) {
   /** 
-   * @todo
+   * @
    * 1. 如果lru cache的大小比size小,则将这个空闲页插入到lru cache中
    *    并设置allocated中相应位是true
    * 2. 如果lru cache已经满了（和size一样大），则需要根据LRU算法来进行替换
@@ -52,8 +52,44 @@ Frame *BPManager::alloc(int file_desc, PageNum page_num) {
    * 提示：调用disk_buffer_pool->flush_block()来刷新到磁盘
    * 提示：调用lrucache.victim(victim, new_buffer_tag) 来将vitim页给替换了。
    */
-  
-  return nullptr;
+  BufferTag bt = {file_desc, page_num};
+  if (lrucache.size() < size) {
+      for (int i = 0; i < BP_BUFFER_SIZE; ++i) {
+          if (!allocated[i]) {
+              RC rc = lrucache.put(bt, i);
+              if (rc != RC::SUCCESS) {
+                  return nullptr;
+              }
+              allocated[i] = true;
+              return &frame[i];
+          }
+      }
+      return nullptr;
+  } else {
+      BufferTag victim;
+      victim.first = -1;
+      lrucache.getVictim(&victim, not_pinned, (void*) this);
+      if (victim.first < 0) {
+          return nullptr;
+      }
+
+      Frame* f = get(victim.first, victim.second);
+      if (f == nullptr) {
+          return nullptr;
+      }
+
+      RC rc = disk_buffer_pool->flush_block(f);
+      if (rc != RC::SUCCESS) {
+          return nullptr;
+      }
+
+      rc = lrucache.victim(victim, bt);
+      if (rc != RC::SUCCESS) {
+          return nullptr;
+      }
+
+      return f;
+  }
 }
 
 void BPManager::printLruCache() {
