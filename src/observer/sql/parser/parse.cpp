@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 //
 
 #include <mutex>
+#include <ctime>
 #include "sql/parser/parse.h"
 #include "rc.h"
 #include "common/log/log.h"
@@ -58,27 +59,51 @@ void value_init_string(Value *value, const char *v)
   value->data = strdup(v);
 }
 
-bool check_date(int y, int m, int d)
+int check_date(int y, int m, int d)
 {
-  // TODO 根据 y:year,m:month,d:day 校验日期是否合法
-  // TODO 合法 return 0
-  // TODO 不合法 return 1
-  return 1;
+  // 根据 y:year,m:month,d:day 校验日期是否合法
+  tm zero;
+  zero.tm_year = 1970 - 1900 + 1;
+  zero.tm_mon = 1 - 1;
+  zero.tm_mday = 1;
+  zero.tm_hour = 0;
+  zero.tm_min = 0;
+  zero.tm_sec = 0;
+  zero.tm_isdst = 0;
+
+  tm tm_;
+  tm_.tm_year = y - 1900 + 1;
+  tm_.tm_mon = m - 1;
+  tm_.tm_mday = d;
+  tm_.tm_hour = 0;
+  tm_.tm_min = 0;
+  tm_.tm_sec = 0;
+  tm_.tm_isdst = 0;
+
+  time_t z_ = mktime(&zero);
+  time_t t_ = mktime(&tm_);
+  // 合法 return 转换后的日期
+  if (t_ >= z_ && (tm_.tm_year == y - 1900 + 1 && tm_.tm_mon == m - 1 && tm_.tm_mday == d)) {
+      return (int) (std::difftime(t_, z_) / 3600 / 24);
+  } else { // 不合法 return -1
+      return -1;
+  }
 }
 
 int value_init_date(Value *value, const char *v) {
-  // TODO 将 value 的 type 属性修改为日期属性:DATES
+  // 将 value 的 type 属性修改为日期属性: DATES
+  value->type = DATES;
 
   // 从lex的解析中读取 year,month,day
   int y,m,d;
   sscanf(v, "%d-%d-%d", &y, &m, &d);//not check return value eq 3, lex guarantee
   // 对读取的日期做合法性校验
-  bool b = check_date(y,m,d);
-  if(!b) return -1;
-  // TODO 将日期转换成整数
-
-  // TODO 将value 的 data 属性修改为转换后的日期
-
+  int data = check_date(y,m,d);
+  if(data == -1) return -1;
+  // 将日期转换成整数
+  // 将 value 的 data 属性修改为转换后的日期
+  value->data = malloc(sizeof(data));
+  memcpy(value->data, &data, sizeof(data));
   return 0;
 }
 

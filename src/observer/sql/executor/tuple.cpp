@@ -256,12 +256,15 @@ void TupleRecordConverter::add_record(const char *record)
         tuple.add(s, strlen(s));
       } break;
       case DATES: {
-        // TODO 从record中读取存储的日期
-
-        // TODO 将日期转换为满足输出格式的字符串，注意这里月份和天数，不足两位时需要填充0
-
-        // TODO 将字符串添加到tuple中
-
+        // 从record中读取存储的日期
+        int value = *(int *)(record + field_meta->offset());
+        // 将日期转换为满足输出格式的字符串，注意这里月份和天数，不足两位时需要填充0
+        time_t timestamp = (time_t) value * 3600 * 24;
+        // yyyy-mm-dd
+        char date[11];
+        strftime(date, sizeof(date), "%Y-%m-%d", localtime(&timestamp));
+        // 将字符串添加到tuple中
+        tuple.add(date, strlen(date));
       }break;
       default: {
         LOG_PANIC("Unsupported field type. type=%d", field_meta->type());
