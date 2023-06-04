@@ -15,6 +15,8 @@ See the Mulan PSL v2 for more details. */
 
 #include <sstream>
 #include <string>
+#include <climits>
+#include <cfloat>
 
 #include "common/io/io.h"
 #include "common/lang/string.h"
@@ -214,27 +216,59 @@ void end_trx_if_need(Session *session, Trx *trx, bool all_right) {
 
 std::string agg_to_string(Aggregation agg) {
   std::string res = "";
-  //TODO 构造聚合函数名字
+  // 构造聚合函数名字
   switch (agg.func_name) {
-    //TODO AGG_MAX
-    //TODO AGG_MIN
-    //TODO AGG_COUNT
-    //TODO AGG_AVG
+    // AGG_MAX
+      case AGG_MAX:
+          res += "max";
+          break;
+    // AGG_MIN
+      case AGG_MIN:
+          res += "min";
+          break;
+    // AGG_COUNT
+      case AGG_COUNT:
+          res += "count";
+          break;
+    // AGG_AVG
+      case AGG_AVG:
+          res += "avg";
+          break;
   }
   res += "(";
   if (1 == agg.is_value) {
     AttrType type = agg.value->type;
     void *val = agg.value->data;
     std::string str;
-    //TODO 构造输出表达字符串
+    // 构造输出表达字符串
     switch (type) {
-      //TODO INT
-      //TODO FLOAT
-      //TODO DATES
+      // INT
+        case INTS:
+            res += std::to_string(*(int*) val);
+            break;
+      // FLOAT
+        case FLOATS:
+            res += std::to_string(*(float*) val);
+            break;
+      // DATES
+        case DATES:
+        case UNDEFINED:
+            break;
+        case CHARS:
+            res += std::to_string(*(char*) val);
+            break;
     }
+    // FIXME 奇怪的 bug
+    agg.value->type = type;
+    agg.value->data = val;
   }
   else{
-    //TODO 如果有relation_name和field_name的话也要添加
+    // 如果有 relation_name 和 field_name 的话也要添加
+      if (agg.attribute.relation_name != nullptr) {
+          res += agg.attribute.relation_name;
+          res += ".";
+      }
+      res += agg.attribute.attribute_name;
   }
   res += ")";
   return res;
@@ -243,28 +277,177 @@ std::string agg_to_string(Aggregation agg) {
 void aggregation_exec(const Selects &selects, TupleSet *res_tuples) {
   if (selects.aggregation_num > 0) {
     TupleSchema agg_schema;
-    //TODO 设置schema
-    //TODO 依次添加字段值
+    // 设置schema
+    // 依次添加字段值
+    std::vector<int> idxs;
+    const auto& fields = res_tuples->schema().fields();
+    for (int i = 0; i < selects.aggregation_num; ++i) {
+        Aggregation agg = selects.aggregations[i];
+        int idx = -1;
+        if (agg.is_value) {
+            agg_schema.add({agg.func_name == AGG_COUNT ? INTS : agg.value->type, "", agg_to_string(agg).c_str()});
+        } else {
+            if (strcmp(agg.attribute.attribute_name, "*") == 0) {
+                agg_schema.add({INTS, agg.attribute.relation_name == nullptr ? "" : agg.attribute.relation_name, agg_to_string(agg).c_str()});
+                idx = -2;
+            } else if (agg.attribute.relation_name == nullptr) {
+                for (int j = 0; j < fields.size(); ++j) {
+                    if (strcmp(agg.attribute.attribute_name, fields[j].field_name()) == 0) {
+                        agg_schema.add({agg.func_name == AGG_COUNT ? INTS : fields[j].type(), fields[j].table_name(), agg_to_string(agg).c_str()});
+                        idx = j;
+                        break;
+                    }
+                }
+            } else {
+                for (int j = 0; j < fields.size(); ++j) {
+                    if (strcmp(agg.attribute.relation_name, fields[j].table_name()) == 0 && strcmp(agg.attribute.attribute_name, fields[j].field_name()) == 0) {
+                        agg_schema.add({agg.func_name == AGG_COUNT ? INTS : fields[j].type(), fields[j].table_name(), agg_to_string(agg).c_str()});
+                        idx = j;
+                        break;
+                    }
+                }
+            }
+        }
+        idxs.push_back(idx);
+    }
     Tuple out;
     for (size_t i = 0; i < selects.aggregation_num; i++) {
       const Aggregation &agg = selects.aggregations[i];
       const std::vector<Tuple> &tuples = res_tuples->tuples();
-      switch (agg.func_name) {
-        case FuncName::AGG_MAX:
-        case FuncName::AGG_MIN: {
-          //TODO 遍历所有元组，获取最值
-          //TODO 增加这条记录
-        }
-        case FuncName::AGG_COUNT: {
-          // 值为size的大小
-          //TODO 增加这条记录
-        }
-        case FuncName::AGG_AVG: {
-          //TODO 遍历所有元组，获取和
-          float sum = 0;
-          //TODO 增加这条记录
-          break;
-        }
+      if (agg.is_value) {
+          AttrType type = agg.value->type;
+          void *val = agg.value->data;
+          std::string s = "unsupported";
+          switch (agg.func_name) {
+              case FuncName::AGG_MAX:
+              case FuncName::AGG_MIN:
+              case FuncName::AGG_AVG:{
+                  switch (type) {
+                      case UNDEFINED:
+                      case CHARS:
+                      case DATES:
+                          LOG_WARN("Not supported");
+                          break;
+                      case INTS:
+                          s = std::to_string(*(int*) val);
+                          break;
+                      case FLOATS:
+                          s = std::to_string(*(float*) val);
+                          break;
+                  }
+              } break;
+              case FuncName::AGG_COUNT: {
+                  s = std::to_string(tuples.size());
+              } break;
+          }
+          out.add(s.c_str(), s.length());
+      } else {
+          std::string s = "unsupported";
+          switch (agg.func_name) {
+              case FuncName::AGG_MAX: {
+                  // 遍历所有元组，获取最值
+                  // 增加这条记录
+                  if (idxs[i] < 0) {
+                      LOG_ERROR("Error");
+                      s = "error";
+                  } else if (tuples.empty()) {
+                      s = "null";
+                  } else {
+                      switch (fields[idxs[i]].type()) {
+                          case UNDEFINED:
+                          case CHARS:
+                          case DATES:
+                              LOG_WARN("Not supported");
+                              break;
+                          case INTS: {
+                              int max = INT_MIN;
+                              for (const auto& tuple : tuples) {
+                                  max = std::max(max, ((IntValue*) tuple.get_pointer(idxs[i]).get())->get_value());
+                              }
+                              s = std::to_string(max);
+                          } break;
+                          case FLOATS: {
+                              float max = -FLT_MAX;
+                              for (const auto& tuple : tuples) {
+                                  max = std::max(max, ((FloatValue*) tuple.get_pointer(idxs[i]).get())->get_value());
+                              }
+                              s = std::to_string(max);
+                          } break;
+                      }
+                  }
+              } break;
+              case FuncName::AGG_MIN: {
+                  // 遍历所有元组，获取最值
+                  // 增加这条记录
+                  if (idxs[i] < 0) {
+                      LOG_ERROR("Error");
+                      s = "error";
+                  } else if (tuples.empty()) {
+                      s = "null";
+                  } else {
+                      switch (fields[idxs[i]].type()) {
+                          case UNDEFINED:
+                          case CHARS:
+                          case DATES:
+                              LOG_WARN("Not supported");
+                              break;
+                          case INTS: {
+                              int min = INT_MAX;
+                              for (const auto& tuple : tuples) {
+                                  min = std::min(min, ((IntValue*) tuple.get_pointer(idxs[i]).get())->get_value());
+                              }
+                              s = std::to_string(min);
+                          } break;
+                          case FLOATS: {
+                              float min = FLT_MAX;
+                              for (const auto& tuple : tuples) {
+                                  min = std::min(min, ((FloatValue*) tuple.get_pointer(idxs[i]).get())->get_value());
+                              }
+                              s = std::to_string(min);
+                          } break;
+                      }
+                  }
+              } break;
+              case FuncName::AGG_AVG: {
+                  // 遍历所有元组，获取和
+                  // 增加这条记录
+                  if (idxs[i] < 0) {
+                      LOG_ERROR("Error");
+                      s = "error";
+                  } else if (tuples.empty()) {
+                      s = "null";
+                  } else {
+                      double sum = 0;
+                      int n = tuples.size();
+                      switch (fields[idxs[i]].type()) {
+                          case UNDEFINED:
+                          case CHARS:
+                          case DATES:
+                              LOG_WARN("Not supported");
+                              break;
+                          case INTS: {
+                              for (const auto& tuple : tuples) {
+                                  sum += ((IntValue*) tuple.get_pointer(idxs[i]).get())->get_value();
+                              }
+                              s = std::to_string(sum / n);
+                          } break;
+                          case FLOATS: {
+                              for (const auto& tuple : tuples) {
+                                  sum += ((FloatValue*) tuple.get_pointer(idxs[i]).get())->get_value();
+                              }
+                              s = std::to_string(sum / n);
+                          } break;
+                      }
+                  }
+              } break;
+              case FuncName::AGG_COUNT: {
+                  // 值为 size 的大小
+                  // 增加这条记录
+                  // 由于没有 null 值，不需要判空
+                  s = std::to_string(tuples.size());
+              } break;
+          }
+          out.add(s.c_str(), s.length());
       }
     }
     //等所有值都计算完再去清除res
@@ -272,7 +455,6 @@ void aggregation_exec(const Selects &selects, TupleSet *res_tuples) {
     res_tuples->set_schema(agg_schema);
     res_tuples->add(std::move(out));
   }
-  return;
 }
 
 // 需要满足多表联查条件
@@ -304,7 +486,7 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
   RC rc = RC::SUCCESS;
   Session *session = session_event->get_client()->session;
   Trx *trx = session->current_trx();
-  const Selects &selects = sql->sstr.selection;
+  const Selects selects = sql->sstr.selection;
 
   // 把所有的表和只跟这张表关联的condition都拿出来，生成最底层的select
   // 执行节点
@@ -394,7 +576,8 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
     //TODO 添加聚合算子
       print_tuples.print(ss);
     } else {
-    //TODO 添加聚合算子
+    // 添加聚合算子
+    aggregation_exec(selects, &tuple_sets[0]);
     // 当前只查询一张表，直接返回结果即可
       tuple_sets.front().print(ss);
     }
