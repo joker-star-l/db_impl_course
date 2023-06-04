@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <sstream>
 #include <string>
+#include <algorithm>
 
 #include "common/io/io.h"
 #include "common/lang/string.h"
@@ -214,23 +215,62 @@ void end_trx_if_need(Session *session, Trx *trx, bool all_right) {
 
 // 需要满足多表联查条件
 bool match_join_condition(const Tuple *res_tuple,
-                          const std::vector<std::vector<int>> condition_idxs) {
+                          const std::vector<std::vector<int>>& condition_idxs) {
   // res_tuple 是 需要进行筛选的某一行
   // condition_idxs 是 C x 3 数组
   // 每一条的3个元素代表（左值的属性在新schema的下标，CompOp运算符，右值的属性在新schema的下标）
-  //TODO 判断表中某一行 res_tuple 是否满足多表联查条件即：左值=右值
-
+  // 判断表中某一行 res_tuple 是否满足多表联查条件即：左值=右值
+  for(const std::vector<int>& con : condition_idxs) {
+      const TupleValue& v1 = res_tuple->get(con[0]);
+      const TupleValue& v2 = res_tuple->get(con[2]);
+      int cmp = v1.compare(v2);
+      bool flag;
+      switch ((CompOp) con[1]) {
+          case EQUAL_TO:
+              flag = 0 == cmp;
+              break;
+          case LESS_EQUAL:
+              flag = cmp <= 0;
+              break;
+          case NOT_EQUAL:
+              flag = cmp != 0;
+              break;
+          case LESS_THAN:
+              flag = cmp < 0;
+              break;
+          case GREAT_EQUAL:
+              flag = cmp >= 0;
+              break;
+          case GREAT_THAN:
+              flag = cmp > 0;
+              break;
+          default:
+              flag = false;
+              break;
+      }
+      if (!flag) return false;
+  }
   return true;
 }
 
 // 将多段小元组合成一个大元组
 Tuple merge_tuples(
-    const std::vector<std::vector<Tuple>::const_iterator> temp_tuples,
-    std::vector<int> orders) {
+    const std::vector<std::vector<Tuple>::const_iterator>& temp_tuples, // [[1,2,3],[4,5,6]]
+    const std::vector<int>& orders) { // [3,4,5,0,1,2]
   std::vector<std::shared_ptr<TupleValue>> temp_res;
-  Tuple res_tuple;
-  //TODO 先把每个字段都放到对应的位置上(temp_res)
-  //TODO 再依次(orders)添加到大元组(res_tuple)里即可
+  Tuple res_tuple; // [4,5,6,1,2,3]
+  // 先把每个字段都放到对应的位置上(temp_res)
+  for (auto& it : temp_tuples) {
+      for (auto& value : it->values()) {
+          temp_res.push_back(value);
+      }
+  }
+  // 再依次(orders)添加到大元组(res_tuple)里即可
+  for (int i : orders) {
+      res_tuple.add(temp_res[i]);
+  }
+
+  return res_tuple;
 }
 
 // 这里没有对输入的某些信息做合法性校验，比如查询的列名、where条件中的列名等，没有做必要的合法性校验
@@ -297,10 +337,50 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
     }
 
     std::vector<int> select_order;
-    //TODO 根据列名输出顺序，添加 old_schema 对应字段到 join_schema 中，并构建select_order数组
+    // 根据列名输出顺序，添加 old_schema 对应字段到 join_schema 中，并构建select_order数组
     // 如果是select * ，添加所有字段
     // 如果是select t1.*，表名匹配的加入字段
     // 如果是select t1.age，表名+字段名匹配的加入字段
+    const std::vector<TupleField> & fields = old_schema.fields();
+    std::vector<RelAttr> attributes;
+    for (auto& attr : selects.attributes) {
+        if (attr.relation_name == nullptr && attr.attribute_name == nullptr) {
+            break;
+        }
+        attributes.push_back(attr);
+    }
+    std::reverse(attributes.begin(), attributes.end());
+    for (auto& attr : attributes) {
+        if (attr.relation_name == nullptr) {
+            if (strcmp(attr.attribute_name, "*") == 0) {
+                join_schema.append(old_schema);
+                for (int i = 0; i < fields.size(); ++i) {
+                    select_order.push_back(i);
+                }
+            } else {
+                LOG_ERROR("Not supported");
+                return RC::GENERIC_ERROR;
+            }
+        } else {
+            if (strcmp(attr.attribute_name, "*") == 0) {
+                for (int i = 0; i < fields.size(); ++i) {
+                    if (strcmp(attr.relation_name, fields[i].table_name()) == 0) {
+                        join_schema.add(fields[i]);
+                        select_order.push_back(i);
+                    }
+                }
+            } else {
+                for (int i = 0; i < fields.size(); ++i) {
+                    if (strcmp(attr.relation_name, fields[i].table_name()) == 0 && strcmp(attr.attribute_name, fields[i].field_name()) == 0) {
+                        join_schema.add(fields[i]);
+                        select_order.push_back(i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     print_tuples.set_schema(join_schema);
 
     // 构建联查的conditions需要找到对应的表
@@ -325,9 +405,48 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
         condition_idxs.push_back(temp_con);
       }
     }
-    //TODO 元组的拼接需要实现笛卡尔积
-    //TODO 将符合连接条件的元组添加到print_tables中
+    // 元组的拼接需要实现笛卡尔积
+    // 此处的实现为 inner join
+    std::vector<std::vector<std::vector<Tuple>::const_iterator>> temp_tuples_list;
+    bool empty = false;
+    for (auto& tuple_set : tuple_sets) {
+        if (tuple_set.is_empty()) {
+            empty = true;
+            break;
+        }
+    }
+    if (!empty) {
+        for (auto rit = tuple_sets.rbegin(); rit != tuple_sets.rend(); ++rit) {
+            std::vector<std::vector<std::vector<Tuple>::const_iterator>> a = temp_tuples_list;
+            std::vector<std::vector<Tuple>::const_iterator> b;
+            const std::vector<Tuple>& tuples = rit->tuples();
+            for (auto it = tuples.begin(); it != tuples.end(); ++it) {
+                b.push_back(it);
+            }
+            if (a.empty()) {
+                for (auto it : b) {
+                    temp_tuples_list.push_back({it});
+                }
+            } else {
+                temp_tuples_list.clear();
+                for (auto& v : a) {
+                    for (auto it : b) {
+                        std::vector<std::vector<Tuple>::const_iterator> vec = v;
+                        vec.push_back(it);
+                        temp_tuples_list.push_back(vec);
+                    }
+                }
+            }
+        }
 
+        // 将符合连接条件的元组添加到 print_tables 中
+        for (const auto& temp_tuples : temp_tuples_list) {
+            Tuple tuple = merge_tuples(temp_tuples, select_order);
+            if (match_join_condition(&tuple, condition_idxs)) {
+                print_tuples.add(std::move(tuple));
+            }
+        }
+    }
       print_tuples.print(ss);
     } else {
       // 当前只查询一张表，直接返回结果即可
